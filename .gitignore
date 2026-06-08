@@ -1,0 +1,7 @@
+# Exclude docx and .claude
+*.docx
+.claude/
+__pycache__/
+*.pyc
+.venv/
+venv/
