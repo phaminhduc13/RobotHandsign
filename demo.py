@@ -4,6 +4,10 @@ import torch
 import torch.nn as nn
 import time
 import sys
+import mediapipe as mp
+from mediapipe.tasks import python
+from mediapipe.tasks.python import vision
+from mediapipe.tasks.python.vision import drawing_utils
 from collections import Counter
 
 if sys.stdout.encoding != 'utf-8':
@@ -44,184 +48,125 @@ class CNN(nn.Module):
         x = self.classifier(x)
         return x
 
-def count_fingers(roi):
-    """Count number of fingers using contour analysis"""
-    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+def count_fingers_from_landmarks(landmarks, handedness):
+    """Count extended fingers using distance-based detection."""
+    tips = [4, 8, 12, 16, 20]  # All finger tips
+    mcps = [2, 5, 9, 13, 17]  # MCP positions
 
-    # Apply threshold
-    _, thresh = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY)
+    finger_count = 0
 
-    # Find contours
-    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    for i in range(5):
+        mcp = landmarks[mcps[i]]
+        tip = landmarks[tips[i]]
+        dx = tip.x - mcp.x
+        dy = tip.y - mcp.y
+        distance = (dx**2 + dy**2) ** 0.5
 
-    if not contours:
-        return 0
+        if distance > 0.12:
+            finger_count += 1
 
-    # Find largest contour (hand)
-    cnt = max(contours, key=cv2.contourArea)
-    area = cv2.contourArea(cnt)
+    return finger_count
 
-    if area < 1000:
-        return 0
+def is_pointing_gesture(landmarks):
+    """Check if hand is making a pointing gesture (only 1 finger extended)."""
+    tips = [4, 8, 12, 16, 20]  # All finger tips
+    mcps = [2, 5, 9, 13, 17]  # MCP positions
 
-    # Convex hull and defects
-    hull = cv2.convexHull(cnt, returnPoints=False)
+    extended_count = 0
+    extended_index = -1
 
-    if len(hull) < 3:
-        return 0
+    for i in range(5):
+        mcp = landmarks[mcps[i]]
+        tip = landmarks[tips[i]]
+        dx = tip.x - mcp.x
+        dy = tip.y - mcp.y
+        distance = (dx**2 + dy**2) ** 0.5
 
-    try:
-        defects = cv2.convexityDefects(cnt, hull)
-        if defects is not None:
-            # Count significant defects (between fingers)
-            finger_count = 0
-            for i in range(defects.shape[0]):
-                s, e, f, d = defects[i, 0]
-                if d[0] > 10000:  # Significant depth
-                    finger_count += 1
-            return finger_count
-    except cv2.error:
-        pass
+        if distance > 0.12:
+            extended_count += 1
+            extended_index = i
 
-    return 0
+    # Pointing = exactly 1 finger extended (index = 0)
+    return extended_count == 1 and extended_index == 1
 
-def detect_hand_by_motion(frame, prev_frame):
-    """Detect hand using motion + skin color"""
-    if prev_frame is None:
-        return None, None
+def get_pointing_direction(landmarks, handedness):
+    """Get pointing direction: LEFT, RIGHT, or UP.
+    Account for frame flip - compare index_tip.x to wrist.x."""
+    wrist = landmarks[0]
+    index_tip = landmarks[8]
 
-    h, w = frame.shape[:2]
-    margin = int(w * 0.20)  # 20% margin to exclude face
-    center_roi = frame[margin:h-margin, margin:w-margin]
+    dy = index_tip.y - wrist.y
 
-    hsv = cv2.cvtColor(center_roi, cv2.COLOR_BGR2HSV)
-    gray = cv2.cvtColor(center_roi, cv2.COLOR_BGR2GRAY)
+    # UP: index significantly above wrist
+    if dy < -0.12:
+        return 'UP'
 
-    prev_gray = cv2.cvtColor(cv2.flip(prev_frame[margin:h-margin, margin:w-margin], 1), cv2.COLOR_BGR2GRAY)
+    # Frame is flipped, so direct comparison works
+    # LEFT hand on left side of frame (after flip) -> pointing left
+    # RIGHT hand on right side of frame (after flip) -> pointing right
+    if index_tip.x < wrist.x:
+        return 'LEFT'
+    else:
+        return 'RIGHT'
 
-    # Motion
-    diff = cv2.absdiff(gray, prev_gray)
-    _, motion_mask = cv2.threshold(diff, 25, 255, cv2.THRESH_BINARY)
+def detect_gesture_from_landmarks(hand_landmarks, handedness):
+    """Determine gesture from hand landmarks."""
+    landmarks = hand_landmarks
 
-    # Skin in HSV
-    lower_skin = np.array([0, 20, 70], dtype=np.uint8)
-    upper_skin = np.array([20, 255, 255], dtype=np.uint8)
-    skin_mask = cv2.cvtColor(cv2.inRange(hsv, lower_skin, upper_skin), cv2.COLOR_GRAY2BGR)
+    tips = [4, 8, 12, 16, 20]
+    mcps = [2, 5, 9, 13, 17]
 
-    # Combine
-    hand_mask = cv2.bitwise_and(motion_mask, cv2.cvtColor(skin_mask, cv2.COLOR_BGR2GRAY))
+    extended_count = 0
+    extended_index = -1
+    index_distance = 0
 
-    kernel = np.ones((5, 5), np.uint8)
-    hand_mask = cv2.morphologyEx(hand_mask, cv2.MORPH_CLOSE, kernel)
-    hand_mask = cv2.morphologyEx(hand_mask, cv2.MORPH_OPEN, kernel)
+    for i in range(5):
+        mcp = landmarks[mcps[i]]
+        tip = landmarks[tips[i]]
+        dx = tip.x - mcp.x
+        dy = tip.y - mcp.y
+        distance = (dx**2 + dy**2) ** 0.5
 
-    contours, _ = cv2.findContours(hand_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if distance > 0.10:
+            extended_count += 1
+            if i == 1:  # Index finger
+                index_distance = distance
 
-    if not contours:
-        return None, hand_mask
-
-    max_area = 0
-    best_cnt = None
-    for cnt in contours:
-        area = cv2.contourArea(cnt)
-        x_cnt, y_cnt, w_cnt, h_cnt = cv2.boundingRect(cnt)
-
-        # Exclude face-like regions (square-ish, in center)
-        aspect = h_cnt / w_cnt if w_cnt > 0 else 0
-        is_face_like = (aspect > 0.8 and aspect < 1.4 and
-                        x_cnt > 50 and x_cnt < w - 100)
-
-        if area > max_area and area > 3000 and not is_face_like:
-            max_area = area
-            best_cnt = cnt
-
-    if best_cnt is None:
-        return None, hand_mask
-
-    x, y, cw, ch = cv2.boundingRect(best_cnt)
-    return (x + margin, y + margin, cw, ch), hand_mask
-
-def determine_gesture_by_fingers(roi):
-    """Determine gesture based on finger count"""
-    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-
-    # Skin color filtering
-    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-    lower_skin = np.array([0, 15, 50], dtype=np.uint8)
-    upper_skin = np.array([25, 255, 255], dtype=np.uint8)
-    skin_mask = cv2.inRange(hsv, lower_skin, upper_skin)
-
-    # Apply mask
-    masked = cv2.bitwise_and(gray, gray, mask=skin_mask)
-    _, thresh = cv2.threshold(masked, 50, 255, cv2.THRESH_BINARY)
-
-    # Find contours
-    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    if not contours:
-        return 'POINT'
-
-    # Find hand contour (largest)
-    cnt = max(contours, key=cv2.contourArea)
-    area = cv2.contourArea(cnt)
-
-    if area < 2000:
-        return 'POINT'
-
-    # Get convex hull
-    hull = cv2.convexHull(cnt, returnPoints=False)
-
-    if len(hull) < 3:
-        return 'POINT'
-
-    try:
-        defects = cv2.convexityDefects(cnt, hull)
-        if defects is not None:
-            # Count fingers based on defects
-            finger_count = 0
-            for i in range(defects.shape[0]):
-                s, e, f, d = defects[i, 0]
-                if d > 10000:
-                    finger_count += 1
-        else:
-            finger_count = 0
-    except:
-        finger_count = 0
-
-    # Aspect ratio of hand region - key for distinguishing fist vs point
-    h_roi, w_roi = roi.shape[:2]
-    aspect = w_roi / h_roi if h_roi > 0 else 1
-
-    # Determine gesture
-    if finger_count >= 4:
-        return 'WAVE'  # Open hand (lots of fingers showing)
-    elif finger_count == 3:
-        return 'WAVE'  # Also open hand
-    elif finger_count == 2:
-        # Check direction of pointing (left or right)
-        M = cv2.moments(cnt)
-        if M["m00"] != 0:
-            cx = int(M["m10"] / M["m00"])
-            # Left side of ROI = pointing left, right side = pointing right
-            if cx < w_roi * 0.4:
+    # Pointing = index is clearly extended (distance > 0.10) and is the longest
+    if extended_count >= 1:
+        # Check if index is extended and clearly longer than others
+        if index_distance > 0.10:
+            direction = get_pointing_direction(landmarks, handedness)
+            if direction == 'LEFT':
                 return 'POINT_LEFT'
-            elif cx > w_roi * 0.6:
+            elif direction == 'RIGHT':
                 return 'POINT_RIGHT'
             else:
-                return 'POINT_LEFT'  # Default to left
-        return 'POINT_LEFT'
-    elif finger_count == 1:
-        # If very elongated horizontally, it's pointing
-        if aspect > 1.3:
-            return 'POINT_LEFT'
+                if extended_count == 1:
+                    return 'FIST'
+                else:
+                    return 'WAVE'
+
+    # Not pointing - check finger count for wave/fist
+    if extended_count >= 4:
+        return 'WAVE'
+    elif extended_count <= 1:
         return 'FIST'
     else:
-        # finger_count == 0: check aspect ratio
-        # Fist: compact (aspect close to 1), Point: elongated
-        if aspect > 1.4:
-            return 'POINT_LEFT'
-        return 'FIST'  # Closed fist (no defects, compact shape)
-        return 'FIST'  # Closed fist (no defects)
+        return 'WAVE'
+
+def get_hand_bounding_box(landmarks, frame_shape):
+    """Get bounding box from hand landmarks."""
+    h, w = frame_shape[:2]
+    xs = [lm.x * w for lm in landmarks]
+    ys = [lm.y * h for lm in landmarks]
+    x_min, x_max = int(min(xs)) - 20, int(max(xs)) + 20
+    y_min, y_max = int(min(ys)) - 20, int(max(ys)) + 20
+    x_min = max(0, x_min)
+    y_min = max(0, y_min)
+    x_max = min(w, x_max)
+    y_max = min(h, y_max)
+    return x_min, y_min, x_max - x_min, y_max - y_min
 
 def print_result(label, probs):
     bar_char = '#'
@@ -232,33 +177,35 @@ def print_result(label, probs):
         bar = bar_char * int(prob * 30)
         print(f"  {cls:10s}: {prob*100:5.1f}% [{bar}]")
 
-def draw_gui(frame, label, probs, action, hand_detected):
+def draw_gui(frame, label, probs, action, hand_detected, finger_count):
     display = cv2.resize(frame, (640, 480))
 
     overlay = display.copy()
-    cv2.rectangle(overlay, (10, 10), (630, 150), (0, 0, 0), -1)
+    cv2.rectangle(overlay, (10, 10), (630, 170), (0, 0, 0), -1)
     cv2.addWeighted(overlay, 0.6, display, 0.4, 0, display)
 
     color = GESTURE_COLORS.get(label, (255, 255, 255))
 
     if hand_detected:
-        cv2.putText(display, "HAND DETECTED", (20, 15),
+        cv2.putText(display, "HAND DETECTED", (20, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
     else:
-        cv2.putText(display, "MOVE YOUR HAND", (20, 15),
+        cv2.putText(display, "MOVE YOUR HAND", (20, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
 
-    cv2.putText(display, f"Gesture: {label}", (20, 50),
+    cv2.putText(display, f"Gesture: {label}", (20, 60),
                 cv2.FONT_HERSHEY_SIMPLEX, 1.2, color, 2)
     cv2.putText(display, f"Action: {action}", (20, 100),
                 cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
+    cv2.putText(display, f"Fingers: {finger_count}", (20, 140),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 1)
 
     max_prob = max(probs)
     bar_width = int(max_prob * 300)
-    cv2.rectangle(display, (20, 120), (320, 140), (50, 50, 50), -1)
-    cv2.rectangle(display, (20, 120), (20 + bar_width, 140), color, -1)
-    cv2.putText(display, f"{max_prob*100:.1f}%", (330, 138),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1)
+    cv2.rectangle(display, (20, 155), (320, 165), (50, 50, 50), -1)
+    cv2.rectangle(display, (20, 155), (20 + bar_width, 165), color, -1)
+    cv2.putText(display, f"{max_prob*100:.1f}%", (330, 163),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
     y_pos = 460
     for cls, prob in zip(CLASSES, probs):
@@ -280,21 +227,44 @@ def main():
         print(f"Loi load model: {e}")
         return
 
-    # Try different backends to open camera
+    # MediaPipe Hands - using new tasks API
+    base_options = python.BaseOptions(model_asset_path='hand_landmarker.task')
+    options = vision.HandLandmarkerOptions(
+        base_options=base_options,
+        running_mode=vision.RunningMode.IMAGE,
+        num_hands=1,
+        min_hand_detection_confidence=0.5,
+        min_hand_presence_confidence=0.5,
+        min_tracking_confidence=0.5
+    )
+    detector = vision.HandLandmarker.create_from_options(options)
+    print("Da khoi tao MediaPipe HandLandmarker")
+
+    # Open camera
     cap = None
-    for backend in [cv2.CAP_MSMF, cv2.CAP_DSHOW, cv2.CAP_ANY]:
+    for backend in [cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY]:
         for idx in [0, 1]:
-            cap = cv2.VideoCapture(idx, backend)
-            if cap.isOpened():
-                print(f"Mo webcam thanh cong: index={idx}, backend={backend}")
-                break
-            cap.release()
-            cap = None
+            try:
+                cap = cv2.VideoCapture(idx, backend)
+                if cap.isOpened():
+                    time.sleep(0.5)
+                    ret, test_frame = cap.read()
+                    if ret and test_frame is not None:
+                        print(f"Mo webcam thanh cong: index={idx}, backend={backend}")
+                        break
+                    else:
+                        cap.release()
+                        cap = None
+                else:
+                    cap.release()
+                    cap = None
+            except Exception:
+                cap = None
         if cap is not None:
             break
 
     if cap is None or not cap.isOpened():
-        print("Khong mo duoc webcam! Thu tat cac app dung webcam (Zoom, Discord...)")
+        print("Khong mo duoc webcam!")
         return
 
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
@@ -305,16 +275,13 @@ def main():
     print(f"Classes: {CLASSES}")
     print("-" * 50)
 
-    prev_frame = None
     last_print = 0
     interval = 0.5
-    hand_count = 0
 
-    # Gesture smoothing - require N consecutive frames to confirm
+    # Gesture smoothing - require more consecutive frames to confirm
     confirm_threshold = 8
     gesture_history = []
-    confirmed_gesture = 'POINT'
-    last_confirmed_time = 0
+    confirmed_gesture = 'WAVE'  # Default to WAVE when no hand detected
 
     try:
         while True:
@@ -323,67 +290,67 @@ def main():
                 break
 
             frame = cv2.flip(frame, 1)
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+            results = detector.detect(mp_image)
 
-            hand_region, mask = detect_hand_by_motion(frame, prev_frame)
-            prev_frame = frame.copy()
+            if results.hand_landmarks and results.handedness:
+                hand_landmarks = results.hand_landmarks[0]
+                handedness_label = results.handedness[0][0].category_name
 
-            if hand_region is not None:
-                x, y, w, h = hand_region
-                cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 3)
+                # Draw landmarks
+                drawing_utils.draw_landmarks(frame, hand_landmarks)
 
+                # Get bounding box
+                x, y, w, h = get_hand_bounding_box(hand_landmarks, frame.shape)
+                cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
+
+                # Detect gesture from landmarks
+                finger_count = count_fingers_from_landmarks(hand_landmarks, handedness_label)
+                finger_gesture = detect_gesture_from_landmarks(hand_landmarks, handedness_label)
+
+                # Smoothing
+                gesture_history.append(finger_gesture)
+                if len(gesture_history) > 10:
+                    gesture_history.pop(0)
+
+                gesture_counts = Counter(gesture_history)
+                most_common = gesture_counts.most_common(1)[0][0]
+                if gesture_counts[most_common] >= confirm_threshold:
+                    confirmed_gesture = most_common
+
+                label = confirmed_gesture
+
+                # CNN prediction for probability display
                 roi = frame[y:y+h, x:x+w]
-
                 if roi.size > 0:
-                    # Primary: finger-based detection
-                    finger_gesture = determine_gesture_by_fingers(roi)
-
-                    # Add to history
-                    gesture_history.append(finger_gesture)
-                    if len(gesture_history) > 10:
-                        gesture_history.pop(0)
-
-                    # Count occurrences
-                    gesture_counts = Counter(gesture_history)
-                    most_common = gesture_counts.most_common(1)[0][0]
-
-                    # Only change if same gesture appears N times
-                    if gesture_counts[most_common] >= confirm_threshold:
-                        confirmed_gesture = most_common
-                        last_confirmed_time = time.time()
-
-                    label = confirmed_gesture
-
-                    # CNN prediction for display
                     img = cv2.resize(roi, (64, 64))
                     img = img.astype('float32') / 255.0
                     img = img.transpose(2, 0, 1)
                     img = torch.FloatTensor(img).unsqueeze(0)
-
                     with torch.no_grad():
                         outputs = model(img)
                         probs = torch.softmax(outputs, dim=1)[0].numpy()
-
-                    hand_count += 1
-                    hand_detected = True
                 else:
                     probs = [0.33, 0.33, 0.34]
-                    label = 'POINT'
-                    hand_detected = False
+
+                hand_detected = True
             else:
                 probs = [0.33, 0.33, 0.34]
-                label = 'POINT'
-                hand_count = max(0, hand_count - 1)
-                hand_detected = hand_count > 2
+                label = confirmed_gesture
+                finger_count = -1
+                hand_detected = False
 
             action = GESTURE_ACTIONS.get(label, 'UNKNOWN')
 
-            display = draw_gui(frame, label, probs, action, hand_detected)
+            display = draw_gui(frame, label, probs, action, hand_detected, finger_count)
             cv2.imshow('Hand Gesture Recognition', display)
 
             current_time = time.time()
             if current_time - last_print >= interval and hand_detected:
                 print_result(label, probs)
                 print(f"  ACTION: {action}")
+                print(f"  FINGERS: {finger_count}")
                 last_print = current_time
 
             if cv2.waitKey(1) & 0xFF == ord('q'):
@@ -393,6 +360,7 @@ def main():
         print("\nDa thoat!")
 
     cap.release()
+    detector.close()
     cv2.destroyAllWindows()
     print("Camera da dong.")
 
