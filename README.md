@@ -91,10 +91,10 @@ python demo.py
 ```
 
 **Màn hình sẽ hiển thị:**
-- Camera bật realtime
+- Camera sẽ hiển thị theo realtime
 - Mỗi 0.5 giây sẽ in kết quả nhận diện
 - Kết quả bao gồm: Loại cử chỉ + Confidence %
-- Bấm `Ctrl+C` để thoát
+- Bấm `q` để thoát
 
 **Output ví dụ:**
 ```
@@ -106,6 +106,10 @@ python demo.py
   POINT      :   4.5% [##]
 ```
 
+**Lưu ý:**
+- Phải tải file hand_landmarker.task về cùng đường dẫn với file demo.py
+
+  
 ## Giải quyết vấn đề thường gặp
 
 ### Lỗi webcam không mở được
