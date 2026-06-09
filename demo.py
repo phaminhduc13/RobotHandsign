@@ -48,9 +48,9 @@ class CNN(nn.Module):
         return x
 
 def count_fingers_from_landmarks(landmarks, handedness):
-    """Count extended fingers using distance-based detection."""
-    tips = [4, 8, 12, 16, 20]  # All finger tips
-    mcps = [2, 5, 9, 13, 17]  # MCP positions
+    """Đếm số ngón tay đang duỗi dựa trên tính toán khoảng cách."""
+    tips = [4, 8, 12, 16, 20]  # Tất cả các đỉnh ngón tay
+    mcps = [2, 5, 9, 13, 17]  # Các vị trí khớp gốc (MCP)
 
     finger_count = 0
 
@@ -67,9 +67,9 @@ def count_fingers_from_landmarks(landmarks, handedness):
     return finger_count
 
 def is_pointing_gesture(landmarks):
-    """Check if hand is making a pointing gesture (only 1 finger extended)."""
-    tips = [4, 8, 12, 16, 20]  # All finger tips
-    mcps = [2, 5, 9, 13, 17]  # MCP positions
+    """Kiểm tra xem tay có đang làm cử chỉ chỉ tay không (chỉ 1 ngón duỗi)."""
+    tips = [4, 8, 12, 16, 20]  # Tất cả các đỉnh ngón tay
+    mcps = [2, 5, 9, 13, 17]  # Các vị trí khớp gốc (MCP)
 
     extended_count = 0
     extended_index = -1
@@ -85,31 +85,31 @@ def is_pointing_gesture(landmarks):
             extended_count += 1
             extended_index = i
 
-    # Pointing = exactly 1 finger extended (index = 0)
+    # Chỉ tay = chính xác 1 ngón được duỗi ra (ngón trỏ có index = 0)
     return extended_count == 1 and extended_index == 1
 
 def get_pointing_direction(landmarks, handedness):
-    """Get pointing direction: LEFT, RIGHT, or UP.
-    Account for frame flip - compare index_tip.x to wrist.x."""
+    """Lấy hướng chỉ tay: TRÁI, PHẢI, hoặc LÊN.
+    Xử lý việc lật khung hình - so sánh trục x của đầu ngón trỏ với trục x của cổ tay."""
     wrist = landmarks[0]
     index_tip = landmarks[8]
 
     dy = index_tip.y - wrist.y
 
-    # UP: index significantly above wrist
+    # LÊN: ngón trỏ nằm cao hơn hẳn so với cổ tay
     if dy < -0.12:
         return 'UP'
 
-    # Frame is flipped, so direct comparison works
-    # LEFT hand on left side of frame (after flip) -> pointing left
-    # RIGHT hand on right side of frame (after flip) -> pointing right
+    # Khung hình đã được lật, nên việc so sánh trực tiếp sẽ hoạt động đúng
+    # Tay TRÁI ở bên trái khung hình (sau khi lật) -> chỉ sang trái
+    # Tay PHẢI ở bên phải khung hình (sau khi lật) -> chỉ sang phải
     if index_tip.x < wrist.x:
         return 'LEFT'
     else:
         return 'RIGHT'
 
 def detect_gesture_from_landmarks(hand_landmarks, handedness):
-    """Determine gesture from hand landmarks."""
+    """Xác định cử chỉ dựa trên các điểm mốc (landmarks) của bàn tay."""
     landmarks = hand_landmarks
 
     tips = [4, 8, 12, 16, 20]
@@ -128,12 +128,12 @@ def detect_gesture_from_landmarks(hand_landmarks, handedness):
 
         if distance > 0.10:
             extended_count += 1
-            if i == 1:  # Index finger
+            if i == 1:  # Ngón trỏ
                 index_distance = distance
 
-    # Pointing = index is clearly extended (distance > 0.10) and is the longest
+    # Chỉ tay = ngón trỏ duỗi rõ ràng (khoảng cách > 0.10) và vươn dài nhất
     if extended_count >= 1:
-        # Check if index is extended and clearly longer than others
+        # Kiểm tra xem ngón trỏ có duỗi và vươn dài hơn hẳn các ngón khác không
         if index_distance > 0.10:
             direction = get_pointing_direction(landmarks, handedness)
             if direction == 'LEFT':
@@ -146,7 +146,7 @@ def detect_gesture_from_landmarks(hand_landmarks, handedness):
                 else:
                     return 'WAVE'
 
-    # Not pointing - check finger count for wave/fist
+    # Không phải chỉ tay - kiểm tra số lượng ngón tay để xác định vẫy (wave) hoặc nắm (fist)
     if extended_count >= 4:
         return 'WAVE'
     elif extended_count <= 1:
@@ -155,7 +155,7 @@ def detect_gesture_from_landmarks(hand_landmarks, handedness):
         return 'WAVE'
 
 def get_hand_bounding_box(landmarks, frame_shape):
-    """Get bounding box from hand landmarks."""
+    """Lấy hộp giới hạn (bounding box) từ các điểm mốc bàn tay."""
     h, w = frame_shape[:2]
     xs = [lm.x * w for lm in landmarks]
     ys = [lm.y * h for lm in landmarks]
@@ -226,7 +226,7 @@ def main():
         print(f"Loi load model: {e}")
         return
 
-    # MediaPipe Hands - using new tasks API
+    # MediaPipe Hands - sử dụng API tasks mới
     base_options = python.BaseOptions(model_asset_path='hand_landmarker.task')
     options = vision.HandLandmarkerOptions(
         base_options=base_options,
@@ -239,7 +239,7 @@ def main():
     detector = vision.HandLandmarker.create_from_options(options)
     print("Da khoi tao MediaPipe HandLandmarker")
 
-    # Open camera
+    # Mở camera
     cap = None
     for backend in [cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY]:
         for idx in [0, 1]:
@@ -277,10 +277,10 @@ def main():
     last_print = 0
     interval = 0.5
 
-    # Gesture smoothing - require more consecutive frames to confirm
+    # Làm mượt cử chỉ - yêu cầu nhiều khung hình liên tiếp giống nhau để xác nhận
     confirm_threshold = 8
     gesture_history = []
-    confirmed_gesture = 'WAVE'  # Default to WAVE when no hand detected
+    confirmed_gesture = 'WAVE'  # Mặc định là WAVE khi không phát hiện thấy bàn tay
 
     try:
         while True:
@@ -297,18 +297,18 @@ def main():
                 hand_landmarks = results.hand_landmarks[0]
                 handedness_label = results.handedness[0][0].category_name
 
-                # Draw landmarks
+                # Vẽ các điểm mốc (landmarks)
                 drawing_utils.draw_landmarks(frame, hand_landmarks)
 
-                # Get bounding box
+                # Lấy hộp giới hạn (bounding box)
                 x, y, w, h = get_hand_bounding_box(hand_landmarks, frame.shape)
                 cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
 
-                # Detect gesture from landmarks
+                # Phát hiện cử chỉ từ các điểm mốc
                 finger_count = count_fingers_from_landmarks(hand_landmarks, handedness_label)
                 finger_gesture = detect_gesture_from_landmarks(hand_landmarks, handedness_label)
 
-                # Smoothing
+                # Làm mượt kết quả
                 gesture_history.append(finger_gesture)
                 if len(gesture_history) > 10:
                     gesture_history.pop(0)
@@ -320,7 +320,7 @@ def main():
 
                 label = confirmed_gesture
 
-                # CNN prediction for probability display
+                # CNN dự đoán để hiển thị xác suất
                 roi = frame[y:y+h, x:x+w]
                 if roi.size > 0:
                     img = cv2.resize(roi, (64, 64))
