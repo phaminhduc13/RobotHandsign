@@ -3,9 +3,7 @@ import os
 import time
 import sys
 
-# Fix Unicode for Windows
-if sys.stdout.encoding != 'utf-8':
-    sys.stdout.reconfigure(encoding='utf-8')
+
 
 # Cấu hình
 IMG_SIZE = 64
