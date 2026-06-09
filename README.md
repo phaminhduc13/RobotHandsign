@@ -42,7 +42,7 @@ python collect_data.py
 - Đặt tay trước webcam với các cử chỉ khác nhau
 - Bấm phím `1` = Chụp ảnh WAVE (vẫy tay)
 - Bấm phím `2` = Chụp ảnh FIST (nắm tay)
-- Bấm phím `3` = Chụp ảnh POINT (chỉ tay)
+- Bấm phím `3` = Chụp ảnh POINT (chỉ tay)(bao gồm cả chỉ bên phải và trái)
 - Bấm `q` = Thoát
 
 Mỗi loại nên chụp 100-300 ảnh, ở nhiều góc độ khác nhau, ánh sáng khác nhau.
