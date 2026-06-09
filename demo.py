@@ -10,8 +10,7 @@ from mediapipe.tasks.python import vision
 from mediapipe.tasks.python.vision import drawing_utils
 from collections import Counter
 
-if sys.stdout.encoding != 'utf-8':
-    sys.stdout.reconfigure(encoding='utf-8')
+
 
 GESTURE_ACTIONS = {
     'WAVE': 'DUNG / STOP',
