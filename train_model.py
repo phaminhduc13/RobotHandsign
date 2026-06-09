@@ -9,9 +9,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report, confusion_matrix
 import sys
 
-# Fix Unicode for Windows
-if sys.stdout.encoding != 'utf-8':
-    sys.stdout.reconfigure(encoding='utf-8')
+
 
 IMG_SIZE = 64
 CLASSES = ['wave', 'fist', 'point']
